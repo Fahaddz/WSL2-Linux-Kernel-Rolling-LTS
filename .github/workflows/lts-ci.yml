@@ -22,7 +22,6 @@ jobs:
     container:
       image: nevuly/nevuly-dev-base:arch
       options: --privileged
-    # REMOVED ARM outputs
     outputs:
       BUILT_KERNEL_VERSION: ${{ steps.get-version.outputs.KERNEL_VERSION }}
       X86_IMAGE_SHA: ${{ steps.gen-sha-256.outputs.X86_IMAGE_SHA }}
@@ -96,9 +95,11 @@ jobs:
       - name: Build WSL2 LTS kernel (x86)
         run: |
           echo "Starting x86 build..."
+          # Use a consistent output directory relative to workspace
+          mkdir -p $GITHUB_WORKSPACE/output 
           make -j$(echo `nproc` + 1 | bc)
-          cp arch/x86/boot/bzImage ../${IMAGE_NAME} # Use env var directly
-          echo "Build finished, image copied to ../${IMAGE_NAME}"
+          cp arch/x86/boot/bzImage $GITHUB_WORKSPACE/output/${IMAGE_NAME} # Copy to output dir
+          echo "Build finished, image copied to output/${IMAGE_NAME}"
 
       - name: Get Kernel Version
         id: get-version
@@ -109,10 +110,12 @@ jobs:
 
       - name: Generate kernel modules (x86)
         run: |
-          STAGING_DIR_VAR="../${MODULES_STAGING_DIR}"
+          # Use absolute path for staging based on workspace
+          STAGING_DIR_VAR="$GITHUB_WORKSPACE/${MODULES_STAGING_DIR}"
           echo "Creating staging directory ${STAGING_DIR_VAR}..."
           mkdir -p "${STAGING_DIR_VAR}"
           echo "Installing modules into staging directory..."
+          # Ensure INSTALL_MOD_PATH is absolute
           make modules_install INSTALL_MOD_PATH="${STAGING_DIR_VAR}"
           echo "Removing build/source symlinks from staging directory..."
           KV=${{ steps.get-version.outputs.KERNEL_VERSION }}
@@ -123,7 +126,8 @@ jobs:
       - name: Generate kernel headers and documents (x86)
         run: |
           KV=${{ steps.get-version.outputs.KERNEL_VERSION }}
-          STAGING_MOD_PATH="../${MODULES_STAGING_DIR}/lib/modules/$KV"
+          # Use absolute path for staging based on workspace
+          STAGING_MOD_PATH="$GITHUB_WORKSPACE/${MODULES_STAGING_DIR}/lib/modules/$KV"
           BUILD_SUBDIR="$STAGING_MOD_PATH/build"
 
           echo "Creating build subdirectory in staging area: $BUILD_SUBDIR"
@@ -179,20 +183,26 @@ jobs:
       - name: Generate kernel additional package VHDX image (x86)
         run: |
           KV=${{ steps.get-version.outputs.KERNEL_VERSION }}
-          MODULE_PATH="../${MODULES_STAGING_DIR}/lib/modules/$KV"
-          OUTPUT_VHDX="../${IMAGE_NAME}-addon.vhdx" # Use env var
+          # Use absolute path for staging based on workspace
+          MODULE_PATH="$GITHUB_WORKSPACE/${MODULES_STAGING_DIR}/lib/modules/$KV"
+          # Place output VHDX in consistent output directory
+          OUTPUT_VHDX="$GITHUB_WORKSPACE/output/${IMAGE_NAME}-addon.vhdx" 
 
           echo "Generating VHDX for modules at $MODULE_PATH..."
+          # Ensure script path is correct relative to checkout root (current dir)
           sudo ./.github/scripts/gen_modules_vhdx.sh "$MODULE_PATH" "$OUTPUT_VHDX"
           echo "VHDX generation done."
 
       - name: Generate kernel additional package tarball (x86)
         run: |
           KV=${{ steps.get-version.outputs.KERNEL_VERSION }}
-          STAGING_ROOT="../${MODULES_STAGING_DIR}"
-          OUTPUT_TARBALL="../${IMAGE_NAME}-addon_install.tar.gz" # Use env var
+          # Use absolute path for staging based on workspace
+          STAGING_ROOT="$GITHUB_WORKSPACE/${MODULES_STAGING_DIR}"
+          # Place output tarball in consistent output directory
+          OUTPUT_TARBALL="$GITHUB_WORKSPACE/output/${IMAGE_NAME}-addon_install.tar.gz"
 
           echo "Copying install script to staging root $STAGING_ROOT"
+          # Ensure script path is correct relative to checkout root (current dir)
           cp ./.github/scripts/addon-install.sh "$STAGING_ROOT/"
 
           echo "Adding version file to staging root $STAGING_ROOT"
@@ -206,7 +216,8 @@ jobs:
         id: gen-sha-256
         run: |
           echo "Generating checksums for x86..."
-          cd .. # Go to workspace root where files are
+          # Change to the output directory
+          cd $GITHUB_WORKSPACE/output
 
           echo "Calculating sha256 for ${IMAGE_NAME}..."
           sha256sum "${IMAGE_NAME}" > "${IMAGE_NAME}.sha256"
@@ -224,16 +235,12 @@ jobs:
           echo "X86_ADDON_VHDX_SHA=$VHDX_SHA" >> $GITHUB_OUTPUT
           echo "Checksum generation done."
 
+      # CORRECTED: Upload files from the dedicated output directory
       - name: Upload kernel Images Artifacts (x86)
         uses: actions/upload-artifact@v4
         with:
-          name: ${IMAGE_NAME}-artifacts # Use env var
-          path: |
-            ../${IMAGE_NAME} 
-            ../${IMAGE_NAME}.sha256
-            ../${IMAGE_NAME}-addon_install.tar.gz
-            ../${IMAGE_NAME}-addon.vhdx
-            ../${IMAGE_NAME}-addon.vhdx.sha256
+          name: ${{ env.IMAGE_NAME }}-artifacts # Use env var for artifact name consistency
+          path: ${{ github.workspace }}/output/* # Upload everything from the output dir
           retention-days: 7
 
   release:
@@ -243,7 +250,6 @@ jobs:
     permissions:
       contents: write
     env:
-      # Only need x86 outputs now
       X86_IMAGE_SHA: ${{ needs.build.outputs.X86_IMAGE_SHA }}
       X86_ADDON_SHA: ${{ needs.build.outputs.X86_ADDON_SHA }}
       X86_ADDON_VHDX_SHA: ${{ needs.build.outputs.X86_ADDON_VHDX_SHA }}
@@ -253,20 +259,17 @@ jobs:
       - name: Download x86 build artifacts
         uses: actions/download-artifact@v4
         with:
-          # Download the specifically named x86 artifact
-          name: bzImage-x86_64-artifacts 
-          path: final_release_files/ # Download directly into the release folder
+          name: bzImage-x86_64-artifacts # Use the consistent artifact name
+          path: final_release_files/
 
       - name: List downloaded files for debugging
         run: ls -lR final_release_files/
-
-      # REMOVED: Prepare Release Assets step (not needed if downloading directly)
 
       - name: Release Kernel (x86)
         uses: softprops/action-gh-release@v2
         with:
           name: Custom Build (x86) - ${{ env.BUILT_KERNEL_VERSION }} (Tag ${{ github.event.inputs.tag_to_build }})
-          tag_name: custom-x86-${{ env.BUILT_KERNEL_VERSION }}-${{ github.run_id }} # Unique tag
+          tag_name: custom-x86-${{ env.BUILT_KERNEL_VERSION }}-${{ github.run_id }}
           body: |
             **Custom WSL2 Kernel Build (x86_64 Only)**
 
@@ -292,7 +295,7 @@ jobs:
             **(Installation instructions are the same as the original Nevuly repo)**
 
           files: |
-            final_release_files/* # Upload all files from the download directory
+            final_release_files/*
           token: ${{ secrets.GITHUB_TOKEN }}
           fail_on_unmatched_files: true
           prerelease: true
