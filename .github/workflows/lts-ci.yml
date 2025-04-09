@@ -256,26 +256,36 @@ jobs:
           tar -czf "$OUTPUT_TARBALL" -C "$STAGING_ROOT" .
           echo "Tarball created."
 
-      # MODIFIED: Generate SHA using correct paths relative to workspace root
+      # CORRECTED: Generate SHA using correct paths and matrix context
       - name: Generate SHA-256 Checksum
         id: gen-sha-256
         run: |
           echo "Generating checksums..."
+          # Define image name components using matrix context
+          IMAGE_NAME_VAR="${{ matrix.image_name_base }}-${{ matrix.arch_long }}"
+          
           # Files are now directly in ../ relative to source dir = workspace root
           cd .. 
-          sha256sum "${IMAGE_NAME}" > "${IMAGE_NAME}.sha256"
-          sha256sum "${IMAGE_NAME}-addon_install.tar.gz" # Capture output later
-          sha256sum "${IMAGE_NAME}-addon.vhdx" > "${IMAGE_NAME}-addon.vhdx.sha256"
+          
+          echo "Calculating sha256 for ${IMAGE_NAME_VAR}..."
+          sha256sum "${IMAGE_NAME_VAR}" > "${IMAGE_NAME_VAR}.sha256"
+          
+          echo "Calculating sha256 for ${IMAGE_NAME_VAR}-addon_install.tar.gz..."
+          TARBALL_SHA=$(sha256sum "${IMAGE_NAME_VAR}-addon_install.tar.gz" | awk '{ print $1 }')
+          
+          echo "Calculating sha256 for ${IMAGE_NAME_VAR}-addon.vhdx..."
+          sha256sum "${IMAGE_NAME_VAR}-addon.vhdx" > "${IMAGE_NAME_VAR}-addon.vhdx.sha256"
+          VHDX_SHA=$(cat "${IMAGE_NAME_VAR}-addon.vhdx.sha256" | awk '{ print $1 }') # Read from file
 
           # Capture SHA sums into outputs based on arch
           if [ "${{ matrix.arch_short }}" == "x86" ]; then
-            read -r sha rest <<< "$(sha256sum ${IMAGE_NAME})" && echo "X86_IMAGE_SHA=$sha" >> $GITHUB_OUTPUT
-            read -r sha rest <<< "$(sha256sum ${IMAGE_NAME}-addon_install.tar.gz)" && echo "X86_ADDON_SHA=$sha" >> $GITHUB_OUTPUT
-            read -r sha rest <<< "$(sha256sum ${IMAGE_NAME}-addon.vhdx)" && echo "X86_ADDON_VHDX_SHA=$sha" >> $GITHUB_OUTPUT
+            read -r sha rest < "${IMAGE_NAME_VAR}.sha256" && echo "X86_IMAGE_SHA=$sha" >> $GITHUB_OUTPUT
+            echo "X86_ADDON_SHA=$TARBALL_SHA" >> $GITHUB_OUTPUT
+            echo "X86_ADDON_VHDX_SHA=$VHDX_SHA" >> $GITHUB_OUTPUT
           else # arm64
-            read -r sha rest <<< "$(sha256sum ${IMAGE_NAME})" && echo "ARM64_IMAGE_SHA=$sha" >> $GITHUB_OUTPUT
-            read -r sha rest <<< "$(sha256sum ${IMAGE_NAME}-addon_install.tar.gz)" && echo "ARM64_ADDON_SHA=$sha" >> $GITHUB_OUTPUT
-            read -r sha rest <<< "$(sha256sum ${IMAGE_NAME}-addon.vhdx)" && echo "ARM64_ADDON_VHDX_SHA=$sha" >> $GITHUB_OUTPUT
+            read -r sha rest < "${IMAGE_NAME_VAR}.sha256" && echo "ARM64_IMAGE_SHA=$sha" >> $GITHUB_OUTPUT
+            echo "ARM64_ADDON_SHA=$TARBALL_SHA" >> $GITHUB_OUTPUT
+            echo "ARM64_ADDON_VHDX_SHA=$VHDX_SHA" >> $GITHUB_OUTPUT
           fi
           echo "Checksum generation done."
 
