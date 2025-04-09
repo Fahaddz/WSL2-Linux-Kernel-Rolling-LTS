@@ -12,7 +12,7 @@ on:
         description: 'Specify the Nevuly git tag to build (e.g., linux-wsl-lts-6.1.80)'
         required: true
         # Example default if desired:
-        # default: 'linux-wsl-lts-6.1.80' 
+        # default: 'linux-wsl-lts-6.1.80'
 
 run-name: My Custom Build ${{ github.event.inputs.tag_to_build || github.ref_name }}
 
@@ -39,13 +39,12 @@ jobs:
           - arch_short: arm64
             arch_long: arm64
             image_name_base: Image
-            
-    # Define full image name based on matrix
+
+    # Define staging path relative to workspace root
     env:
-      IMAGE_NAME: ${{ matrix.image_name_base }}-${{ matrix.arch_long }}
-      # Define staging path relative to workspace root
       MODULES_STAGING_DIR: modules_staging_${{ matrix.arch_short }}
-      ADDON_PACKAGE_DIR: ${{ matrix.image_name_base }}-${{ matrix.arch_long }}-addon_install
+      # IMAGE_NAME is problematic to define here for use in later shell scripts
+      # We will construct it inside the steps using matrix context
 
     steps:
       - name: Trust this directory (Needed for Docker-in-Docker?)
@@ -64,24 +63,24 @@ jobs:
         run: |
           echo "Copying base config: arch/${{ matrix.arch_short }}/configs/config-wsl-${{ matrix.arch_short }}"
           cp arch/${{ matrix.arch_short }}/configs/config-wsl-${{ matrix.arch_short }} .config
-          
+
           echo "Enabling Binder/Ashmem features as built-in..."
           scripts/config --set-val CONFIG_ANDROID_BINDER_IPC y
           scripts/config --set-val CONFIG_ANDROID_BINDERFS y
           scripts/config --set-val CONFIG_ASHMEM y
-          
+
           echo "Ensuring KVM is built-in..."
           scripts/config --set-val CONFIG_KVM y
           if [ "${{ matrix.arch_short }}" == "x86" ]; then
-            echo "Setting KVM for Intel (change if AMD)" # <<< EDIT HERE IF AMD
-            scripts/config --set-val CONFIG_KVM_AMD y 
-            # scripts/config --set-val CONFIG_KVM_AMD y # <<< UNCOMMENT FOR AMD
+            echo "Setting KVM for AMD" # <<< MESSAGE UPDATED FOR AMD
+            scripts/config --set-val CONFIG_KVM_AMD y  # <<< KEPT AMD ENABLED
+            # scripts/config --set-val CONFIG_KVM_INTEL y # <<< INTEL COMMENTED OUT
           else # arm64
             scripts/config --set-val CONFIG_KVM_ARM y # Assuming this is correct for arm64 KVM
           fi
           scripts/config --set-val CONFIG_VHOST y
           scripts/config --set-val CONFIG_VHOST_NET y
-          
+
           echo "Forcing critical Docker/Networking features to built-in..."
           scripts/config --set-val CONFIG_NETFILTER y
           scripts/config --set-val CONFIG_NF_TABLES y
@@ -89,9 +88,9 @@ jobs:
           scripts/config --set-val CONFIG_NFT_COMPAT y
           scripts/config --set-val CONFIG_NF_CONNTRACK y
           scripts/config --set-val CONFIG_NF_NAT y
-          scripts/config --set-val CONFIG_IP_NF_NAT y 
+          scripts/config --set-val CONFIG_IP_NF_NAT y
           scripts/config --set-val CONFIG_NETFILTER_XT_TARGET_MASQUERADE y
-          scripts/config --set-val CONFIG_IP_NF_TARGET_MASQUERADE y 
+          scripts/config --set-val CONFIG_IP_NF_TARGET_MASQUERADE y
           scripts/config --set-val CONFIG_NETFILTER_XT_MATCH_ADDRTYPE y
           scripts/config --set-val CONFIG_NETFILTER_XT_MATCH_CONNTRACK y
           scripts/config --set-val CONFIG_BRIDGE y
@@ -104,7 +103,7 @@ jobs:
           scripts/config --enable CONFIG_VIRTIO_VSOCKETS
           scripts/config --enable CONFIG_NET_9P
           scripts/config --enable CONFIG_NET_9P_VIRTIO
-          
+
           echo "Finalizing config..."
           make oldconfig
           echo "Config finalized."
@@ -112,16 +111,18 @@ jobs:
       # MODIFIED: Build kernel using the modified .config
       - name: Build WSL2 LTS kernel
         run: |
+          # Construct image name within the step
+          IMAGE_NAME_VAR="${{ matrix.image_name_base }}-${{ matrix.arch_long }}"
           echo "Starting build for ${{ matrix.arch_short }}..."
           if [ "${{ matrix.arch_short }}" == "x86" ]; then
-            make -j$(echo `nproc` + 1 | bc) 
-            cp arch/x86/boot/bzImage ../${IMAGE_NAME} # Copy outside source dir
+            make -j$(echo `nproc` + 1 | bc)
+            cp arch/x86/boot/bzImage ../${IMAGE_NAME_VAR} # Copy outside source dir
           else
             export ARCH=arm64 && export CROSS_COMPILE=aarch64-linux-gnu-
-            make -j$(echo `nproc` + 1 | bc) 
-            cp arch/arm64/boot/Image ../${IMAGE_NAME} # Copy outside source dir
+            make -j$(echo `nproc` + 1 | bc)
+            cp arch/arm64/boot/Image ../${IMAGE_NAME_VAR} # Copy outside source dir
           fi
-          echo "Build finished, image copied to ../${IMAGE_NAME}"
+          echo "Build finished, image copied to ../${IMAGE_NAME_VAR}"
 
       # ADDED: Get the exact kernel version string AFTER build
       - name: Get Kernel Version
@@ -134,34 +135,36 @@ jobs:
       # MODIFIED: Generate modules into staging dir outside source
       - name: Generate kernel modules
         run: |
-          echo "Creating staging directory ${MODULES_STAGING_DIR}..."
-          mkdir -p ../${MODULES_STAGING_DIR}
+          STAGING_DIR_VAR="../${{ env.MODULES_STAGING_DIR }}" # Use env context here
+          echo "Creating staging directory ${STAGING_DIR_VAR}..."
+          mkdir -p "${STAGING_DIR_VAR}"
           echo "Installing modules into staging directory..."
           # Use INSTALL_MOD_PATH relative to the build directory (current dir)
-          make modules_install INSTALL_MOD_PATH=../${MODULES_STAGING_DIR}
+          make modules_install INSTALL_MOD_PATH="${STAGING_DIR_VAR}"
           echo "Removing build/source symlinks from staging directory..."
           # Use the actual kernel version from previous step
           KV=${{ steps.get-version.outputs.KERNEL_VERSION }}
-          rm -f ../${MODULES_STAGING_DIR}/lib/modules/$KV/build
-          rm -f ../${MODULES_STAGING_DIR}/lib/modules/$KV/source
+          rm -f "${STAGING_DIR_VAR}/lib/modules/$KV/build"
+          rm -f "${STAGING_DIR_VAR}/lib/modules/$KV/source"
           echo "Modules prepared in staging dir."
 
       # MODIFIED: Generate headers into staging dir's build subdir
       - name: Generate kernel headers and documents
         run: |
           KV=${{ steps.get-version.outputs.KERNEL_VERSION }}
-          STAGING_MOD_PATH=../${MODULES_STAGING_DIR}/lib/modules/$KV
-          BUILD_SUBDIR=$STAGING_MOD_PATH/build # Define path for headers etc.
-          
+          # Construct staging path using env context
+          STAGING_MOD_PATH="../${{ env.MODULES_STAGING_DIR }}/lib/modules/$KV"
+          BUILD_SUBDIR="$STAGING_MOD_PATH/build" # Define path for headers etc.
+
           echo "Creating build subdirectory in staging area: $BUILD_SUBDIR"
           mkdir -p "$BUILD_SUBDIR"
-          
+
           echo "Installing base files to $BUILD_SUBDIR"
           install -Dt "$BUILD_SUBDIR" -m644 Makefile Module.symvers System.map vmlinux
-          
+
           echo "Installing kernel Makefile"
           install -Dt "$BUILD_SUBDIR/kernel" -m644 kernel/Makefile
-          
+
           echo "Installing arch-specific Makefiles and headers"
           if [ "${{ matrix.arch_short }}" == "x86" ]; then
             install -Dt "$BUILD_SUBDIR/arch/x86" -m644 arch/x86/Makefile
@@ -174,20 +177,20 @@ jobs:
             mkdir -p "$BUILD_SUBDIR/arch/arm"
             cp -t "$BUILD_SUBDIR/arch/arm" -a arch/arm/include
           fi
-          
+
           echo "Copying scripts and include directories"
           cp -t "$BUILD_SUBDIR" -a scripts include
-          
+
           echo "Installing specific tools and headers (check paths)"
           if [ "${{ matrix.arch_short }}" == "x86" ]; then
             install -Dt "$BUILD_SUBDIR/tools/objtool" tools/objtool/objtool || echo "Warning: objtool not found or install failed"
             install -Dt "$BUILD_SUBDIR/tools/bpf/resolve_btfids" tools/bpf/resolve_btfids/resolve_btfids || echo "Warning: resolve_btfids not found or install failed"
           fi
           # Check if these header paths are correct/needed - adapt from original
-          install -Dt "$BUILD_SUBDIR/drivers/md" -m644 drivers/md/*.h || true 
+          install -Dt "$BUILD_SUBDIR/drivers/md" -m644 drivers/md/*.h || true
           install -Dt "$BUILD_SUBDIR/net/mac80211" -m644 net/mac80211/*.h || true
           # ... (Add other specific header installs if necessary, using || true to ignore errors if files don't exist) ...
-          
+
           echo "Copying Kconfig files"
           find . -name 'Kconfig*' -exec install -Dm644 {} "$BUILD_SUBDIR/{}" \;
 
@@ -197,10 +200,10 @@ jobs:
           else # arm64
             find "$BUILD_SUBDIR/arch/" -mindepth 1 -maxdepth 1 -type d ! -name 'arm64' ! -name 'arm' -exec echo "Removing {}" \; -exec rm -rf {} \;
           fi
-          
+
           echo "Removing Documentation symlink/dir if present in build headers"
-          rm -rf "$BUILD_SUBDIR/Documentation" 
-          
+          rm -rf "$BUILD_SUBDIR/Documentation"
+
           echo "Cleaning build headers: removing symlinks, object files"
           find -L "$BUILD_SUBDIR" -type l -printf 'Removing symlink: %P\n' -delete
           find -L "$BUILD_SUBDIR" -type f \( -name '*.o' -o -name '*.cmd' \) -printf 'Removing object/cmd file: %P\n' -delete
@@ -219,18 +222,21 @@ jobs:
             strip -v --strip-unneeded "$BUILD_SUBDIR/vmlinux" || echo "Stripping vmlinux failed"
           fi
 
-          # Copy Documentation - This step seems misplaced if build headers are the goal
-          # echo "Copying Documentation (reconsider if needed here)"
+          # Copy Documentation - Reconsider if needed
+          # echo "Copying Documentation"
           # cp -r Documentation "$BUILD_SUBDIR/Documentation"
-          
+
           echo "Header/document generation done."
 
       # MODIFIED: Generate VHDX from the staging directory
       - name: Generate kernel additional package VHDX image
         run: |
           KV=${{ steps.get-version.outputs.KERNEL_VERSION }}
-          MODULE_PATH="../${MODULES_STAGING_DIR}/lib/modules/$KV"
-          OUTPUT_VHDX="../${IMAGE_NAME}-addon.vhdx"
+          MODULE_PATH="../${{ env.MODULES_STAGING_DIR }}/lib/modules/$KV" # Use env context
+          # Construct image name within the step
+          IMAGE_NAME_VAR="${{ matrix.image_name_base }}-${{ matrix.arch_long }}"
+          OUTPUT_VHDX="../${IMAGE_NAME_VAR}-addon.vhdx"
+
           echo "Generating VHDX for modules at $MODULE_PATH..."
           # Ensure script path is correct relative to checkout root
           # Need sudo for mounting/disk operations
@@ -241,19 +247,21 @@ jobs:
       - name: Generate kernel additional package tarball
         run: |
           KV=${{ steps.get-version.outputs.KERNEL_VERSION }}
-          STAGING_ROOT=../${MODULES_STAGING_DIR} # Root of staging dir
-          OUTPUT_TARBALL="../${IMAGE_NAME}-addon_install.tar.gz"
-          
+          STAGING_ROOT="../${{ env.MODULES_STAGING_DIR }}" # Root of staging dir, use env context
+          # Construct image name within the step
+          IMAGE_NAME_VAR="${{ matrix.image_name_base }}-${{ matrix.arch_long }}"
+          OUTPUT_TARBALL="../${IMAGE_NAME_VAR}-addon_install.tar.gz"
+
           echo "Copying install script to staging root $STAGING_ROOT"
           # Ensure script path is correct relative to checkout root
           cp ./.github/scripts/addon-install.sh "$STAGING_ROOT/"
-          
+
           echo "Adding version file to staging root $STAGING_ROOT"
           echo "$KV" > "$STAGING_ROOT/kernel_version.txt"
-          
+
           echo "Creating tarball $OUTPUT_TARBALL from $STAGING_ROOT"
           # Use -C to change directory to the staging root before creating tarball
-          tar -czf "$OUTPUT_TARBALL" -C "$STAGING_ROOT" .
+          tar -czf "$OUTPUT_TARBALL" -C "$STAGING_ROOT" . # Tar contents of staging root
           echo "Tarball created."
 
       # CORRECTED: Generate SHA using correct paths and matrix context
@@ -263,16 +271,16 @@ jobs:
           echo "Generating checksums..."
           # Define image name components using matrix context
           IMAGE_NAME_VAR="${{ matrix.image_name_base }}-${{ matrix.arch_long }}"
-          
+
           # Files are now directly in ../ relative to source dir = workspace root
-          cd .. 
-          
+          cd ..
+
           echo "Calculating sha256 for ${IMAGE_NAME_VAR}..."
           sha256sum "${IMAGE_NAME_VAR}" > "${IMAGE_NAME_VAR}.sha256"
-          
+
           echo "Calculating sha256 for ${IMAGE_NAME_VAR}-addon_install.tar.gz..."
           TARBALL_SHA=$(sha256sum "${IMAGE_NAME_VAR}-addon_install.tar.gz" | awk '{ print $1 }')
-          
+
           echo "Calculating sha256 for ${IMAGE_NAME_VAR}-addon.vhdx..."
           sha256sum "${IMAGE_NAME_VAR}-addon.vhdx" > "${IMAGE_NAME_VAR}-addon.vhdx.sha256"
           VHDX_SHA=$(cat "${IMAGE_NAME_VAR}-addon.vhdx.sha256" | awk '{ print $1 }') # Read from file
@@ -289,17 +297,18 @@ jobs:
           fi
           echo "Checksum generation done."
 
-      # MODIFIED: Upload files from workspace root
+      # CORRECTED: Upload files from workspace root using matrix context
       - name: Upload kernel Images Artifacts
-        uses: actions/upload-artifact@v4 # Use specific version
+        uses: actions/upload-artifact@v4
         with:
-          name: ${{ IMAGE_NAME }}-artifacts # Give artifact a clear name
+          # Construct artifact name using matrix context
+          name: ${{ matrix.image_name_base }}-${{ matrix.arch_long }}-artifacts
           path: |
-            ../${IMAGE_NAME} 
-            ../${IMAGE_NAME}.sha256
-            ../${IMAGE_NAME}-addon_install.tar.gz
-            ../${IMAGE_NAME}-addon.vhdx
-            ../${IMAGE_NAME}-addon.vhdx.sha256
+            ../${{ matrix.image_name_base }}-${{ matrix.arch_long }} 
+            ../${{ matrix.image_name_base }}-${{ matrix.arch_long }}.sha256
+            ../${{ matrix.image_name_base }}-${{ matrix.arch_long }}-addon_install.tar.gz
+            ../${{ matrix.image_name_base }}-${{ matrix.arch_long }}-addon.vhdx
+            ../${{ matrix.image_name_base }}-${{ matrix.arch_long }}-addon.vhdx.sha256
           retention-days: 7 # Keep artifacts for a week
 
   release:
@@ -307,26 +316,22 @@ jobs:
     needs: build
     # Only run release if triggered manually AND succeeded
     if: github.event_name == 'workflow_dispatch' && needs.build.result == 'success'
+    permissions:
+      contents: write # Need write permission to create releases
     env:
       # Get outputs from the specific matrix job we care about (e.g., x86)
       # Note: This assumes you primarily want the x86 release artifacts.
-      # Handling matrix outputs properly for release can be more complex.
-      # We might need separate release jobs or better output handling if ARM is also needed.
       X86_IMAGE_SHA: ${{ needs.build.outputs.X86_IMAGE_SHA }}
       X86_ADDON_SHA: ${{ needs.build.outputs.X86_ADDON_SHA }}
       X86_ADDON_VHDX_SHA: ${{ needs.build.outputs.X86_ADDON_VHDX_SHA }}
-      # ARM hashes might be empty if only x86 ran or if matrix output handling is simple
-      ARM64_IMAGE_SHA: ${{ needs.build.outputs.ARM64_IMAGE_SHA }} 
+      ARM64_IMAGE_SHA: ${{ needs.build.outputs.ARM64_IMAGE_SHA }}
       ARM64_ADDON_SHA: ${{ needs.build.outputs.ARM64_ADDON_SHA }}
       ARM64_ADDON_VHDX_SHA: ${{ needs.build.outputs.ARM64_ADDON_VHDX_SHA }}
       BUILT_KERNEL_VERSION: ${{ needs.build.outputs.BUILT_KERNEL_VERSION }}
 
-
     steps:
-      # No need to checkout source again for release
-      # - uses: actions/checkout@main 
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4 # Use specific version
+        uses: actions/download-artifact@v4
         with:
           path: release_artifacts/ # Download all artifacts into this folder
 
@@ -337,9 +342,7 @@ jobs:
         id: prep_assets
         run: |
           mkdir final_release_files
-          # Assuming artifacts are downloaded into subfolders named after the artifact name
-          # e.g., release_artifacts/bzImage-x86_64-artifacts/...
-          # Copy the files we want to release into a single folder
+          # Artifacts are downloaded into subfolders named after the artifact name
           echo "Copying x86 files..."
           cp release_artifacts/bzImage-x86_64-artifacts/* final_release_files/ || echo "Warning: x86 artifacts not found"
           echo "Copying arm64 files..."
@@ -349,12 +352,10 @@ jobs:
           ls -l final_release_files/
 
       - name: Release Kernel
-        uses: softprops/action-gh-release@v2 # Use specific version
+        uses: softprops/action-gh-release@v2 
         with:
-          # Use a name indicating it's your custom build and the version
           name: Custom Build - ${{ env.BUILT_KERNEL_VERSION }} (From Tag ${{ github.event.inputs.tag_to_build }})
-          # Create a unique tag for your custom release
-          tag_name: custom-${{ env.BUILT_KERNEL_VERSION }}-${{ github.run_id }} 
+          tag_name: custom-${{ env.BUILT_KERNEL_VERSION }}-${{ github.run_id }}
           body: |
             **Custom WSL2 Kernel Build**
 
@@ -383,10 +384,9 @@ jobs:
 
             **(Installation instructions are the same as the original Nevuly repo)**
 
-          # Point to the folder containing the prepared files
           files: |
-            final_release_files/* 
+            final_release_files/*
           # Use the default GITHUB_TOKEN for releases in your own fork
-          token: ${{ secrets.GITHUB_TOKEN }} 
+          token: ${{ secrets.GITHUB_TOKEN }}
           fail_on_unmatched_files: true # Fail if assets aren't found
           prerelease: true # Mark as pre-release since it's custom
