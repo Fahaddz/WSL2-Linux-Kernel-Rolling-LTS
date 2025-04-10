@@ -243,6 +243,7 @@ jobs:
         with:
           name: ${{ github.ref_name || github.event.inputs.kernel_version }}
           tag_name: ${{ github.ref_name || github.event.inputs.kernel_version }}
+          draft: true
           body: |
             **WARNING**
             ARM64 kernel has not been tested. If you have any issues, please leave an issue on the [Issues tab](https://github.com/Nevuly/WSL2-Rolling-Kernel-Issue/issues)!
@@ -268,5 +269,5 @@ jobs:
 
           files: |
             release_images/*/*
-          token: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+          token: ${{ github.token }}
           fail_on_unmatched_files: true
