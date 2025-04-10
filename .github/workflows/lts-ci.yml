@@ -23,7 +23,6 @@ jobs:
     outputs:
       BUILT_KERNEL_VERSION: ${{ steps.get-version.outputs.KERNEL_VERSION }}
       X86_IMAGE_SHA: ${{ steps.gen-sha-256.outputs.X86_IMAGE_SHA }}
-      # REMOVED Addon/VHDX outputs as we are building in
 
     env:
       ARCH_SHORT: x86
@@ -42,7 +41,6 @@ jobs:
           ref: ${{ github.event.inputs.tag_to_build }}
           fetch-depth: 0
 
-      # MODIFIED: Configure kernel step - ONLY Binder/Ashmem/KVM added
       - name: Configure Kernel with Binder/Ashmem/KVM (Built-in)
         run: |
           echo "Copying base config: arch/x86/configs/config-wsl-x86"
@@ -59,17 +57,13 @@ jobs:
           scripts/config --set-val CONFIG_VHOST y
           scripts/config --set-val CONFIG_VHOST_NET y
           
-          # --- REMOVED the entire "Forcing critical Docker/Networking features" block ---
-
           echo "Finalizing config..."
-          make oldconfig # Accept defaults for Binder/Ashmem/KVM if any new options appear
+          make oldconfig # Accept defaults
           echo "Config finalized."
 
-      # Build kernel using the modified .config
       - name: Build WSL2 LTS kernel (x86)
         run: |
           echo "Starting x86 build..."
-          # Use a consistent output directory relative to workspace
           mkdir -p $GITHUB_WORKSPACE/output 
           make -j$(echo `nproc` + 1 | bc)
           cp arch/x86/boot/bzImage $GITHUB_WORKSPACE/output/${IMAGE_NAME} # Copy to output dir
@@ -82,36 +76,29 @@ jobs:
           echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_OUTPUT
           echo "Detected kernel version: $KERNEL_VERSION"
 
-      # REMOVED: Generate kernel modules step (building in)
-      # REMOVED: Generate kernel headers step (not needed without separate modules)
-      # REMOVED: Generate VHDX step (not needed without separate modules)
-      # REMOVED: Generate tarball step (not needed without separate modules)
+      # REMOVED Module/Tarball/VHDX steps
 
-      # MODIFIED: Generate SHA for kernel image ONLY
       - name: Generate SHA-256 Checksum (x86 Kernel Only)
         id: gen-sha-256
         run: |
           echo "Generating checksum for x86 kernel image..."
-          cd $GITHUB_WORKSPACE/output # Go to output directory
+          cd $GITHUB_WORKSPACE/output 
 
           echo "Calculating sha256 for ${IMAGE_NAME}..."
           sha256sum "${IMAGE_NAME}" > "${IMAGE_NAME}.sha256"
 
           # Output only x86 image SHA
           read -r sha rest < "${IMAGE_NAME}.sha256" && echo "X86_IMAGE_SHA=$sha" >> $GITHUB_OUTPUT
-          # Set other outputs to empty string
-          echo "X86_ADDON_SHA=" >> $GITHUB_OUTPUT
-          echo "X86_ADDON_VHDX_SHA=" >> $GITHUB_OUTPUT
           echo "Checksum generation done."
 
-      # MODIFIED: Upload kernel image ONLY
+      # CORRECTED UPLOAD: Use env.IMAGE_NAME for artifact name consistency
       - name: Upload kernel Image Artifact (x86)
         uses: actions/upload-artifact@v4
         with:
-          name: ${IMAGE_NAME}-kernel-artifact # Artifact name reflects content
+          name: ${{ env.IMAGE_NAME }}-kernel-artifact # Use env var directly
           path: |
-            ${{ github.workspace }}/output/${IMAGE_NAME} 
-            ${{ github.workspace }}/output/${IMAGE_NAME}.sha256
+            ${{ github.workspace }}/output/${{ env.IMAGE_NAME }} 
+            ${{ github.workspace }}/output/${{ env.IMAGE_NAME }}.sha256
           retention-days: 7
 
   release:
@@ -123,12 +110,14 @@ jobs:
     env:
       X86_IMAGE_SHA: ${{ needs.build.outputs.X86_IMAGE_SHA }}
       BUILT_KERNEL_VERSION: ${{ needs.build.outputs.BUILT_KERNEL_VERSION }}
+      IMAGE_NAME: bzImage-x86_64 # Define IMAGE_NAME here too for consistency
 
     steps:
+      # CORRECTED DOWNLOAD: Use env.IMAGE_NAME for artifact name consistency
       - name: Download x86 kernel artifact
         uses: actions/download-artifact@v4
         with:
-          name: bzImage-x86_64-kernel-artifact # Use the correct artifact name
+          name: ${{ env.IMAGE_NAME }}-kernel-artifact # Use env var directly
           path: final_release_files/ 
 
       - name: List downloaded files for debugging
