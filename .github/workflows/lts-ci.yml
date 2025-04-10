@@ -56,7 +56,7 @@ jobs:
           scripts/config --set-val CONFIG_KVM_AMD y # AMD Enabled
           scripts/config --set-val CONFIG_VHOST y
           scripts/config --set-val CONFIG_VHOST_NET y
-          
+
           echo "Finalizing config..."
           make oldconfig # Accept defaults
           echo "Config finalized."
@@ -64,7 +64,7 @@ jobs:
       - name: Build WSL2 LTS kernel (x86)
         run: |
           echo "Starting x86 build..."
-          mkdir -p $GITHUB_WORKSPACE/output 
+          mkdir -p $GITHUB_WORKSPACE/output
           make -j$(echo `nproc` + 1 | bc)
           cp arch/x86/boot/bzImage $GITHUB_WORKSPACE/output/${IMAGE_NAME} # Copy to output dir
           echo "Build finished, image copied to output/${IMAGE_NAME}"
@@ -82,7 +82,7 @@ jobs:
         id: gen-sha-256
         run: |
           echo "Generating checksum for x86 kernel image..."
-          cd $GITHUB_WORKSPACE/output 
+          cd $GITHUB_WORKSPACE/output
 
           echo "Calculating sha256 for ${IMAGE_NAME}..."
           sha256sum "${IMAGE_NAME}" > "${IMAGE_NAME}.sha256"
@@ -91,7 +91,7 @@ jobs:
           read -r sha rest < "${IMAGE_NAME}.sha256" && echo "X86_IMAGE_SHA=$sha" >> $GITHUB_OUTPUT
           echo "Checksum generation done."
 
-      # CORRECTED UPLOAD: Use env.IMAGE_NAME for artifact name consistency
+      # Upload kernel image ONLY
       - name: Upload kernel Image Artifact (x86)
         uses: actions/upload-artifact@v4
         with:
@@ -113,17 +113,16 @@ jobs:
       IMAGE_NAME: bzImage-x86_64 # Define IMAGE_NAME here too for consistency
 
     steps:
-      # CORRECTED DOWNLOAD: Use env.IMAGE_NAME for artifact name consistency
       - name: Download x86 kernel artifact
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.IMAGE_NAME }}-kernel-artifact # Use env var directly
-          path: final_release_files/ 
+          path: final_release_files/
 
       - name: List downloaded files for debugging
         run: ls -lR final_release_files/
 
-      # MODIFIED: Release kernel image ONLY
+      # Release kernel image ONLY
       - name: Release Kernel (x86)
         uses: softprops/action-gh-release@v2
         with:
@@ -134,13 +133,13 @@ jobs:
 
             Based on Nevuly's source tag: `${{ github.event.inputs.tag_to_build }}`
             Built kernel version: `${{ env.BUILT_KERNEL_VERSION }}`
-            
+
             **Includes added support BUILT-IN:**
             * Android Binder IPC (`CONFIG_ANDROID_BINDER_IPC=y`)
             * Android Binderfs (`CONFIG_ANDROID_BINDERFS=y`)
             * Android Ashmem (`CONFIG_ASHMEM=y`)
             * KVM (AMD)
-            
+
             **NOTE:** Docker networking features were NOT explicitly forced built-in in this build, relying on the base Nevuly config. No separate module package (`tar.gz`/`.vhdx`) is needed or provided.
 
             **WARNING**
@@ -153,8 +152,9 @@ jobs:
 
             **(Installation: Update `.wslconfig` kernel= path, `wsl --shutdown`, start WSL)**
 
+          # CORRECTED: Removed comment from files pattern
           files: |
-            final_release_files/* # Upload kernel image and its checksum
+            final_release_files/* 
           token: ${{ secrets.GITHUB_TOKEN }}
           fail_on_unmatched_files: true
           prerelease: true
